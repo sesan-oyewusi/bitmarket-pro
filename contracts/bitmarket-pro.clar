@@ -243,3 +243,81 @@
     )
   )
 )
+
+;; Finalize auction and execute settlement
+(define-public (end-auction (product-id uint))
+  (let (
+      (product (unwrap! (map-get? Products product-id) err-listing-not-found))
+      (auction (unwrap! (map-get? Auctions product-id) err-no-active-auction))
+      (brand (get brand product))
+    )
+    (asserts! (get is-active auction) err-auction-ended)
+    (asserts! (>= stacks-block-height (get end-block auction)) err-auction-ended)
+
+    (match (get highest-bidder auction)
+      winner (begin
+        (let (
+            (bid-amount (get highest-bid auction))
+            (fee (/ (* bid-amount (var-get platform-fee)) u1000))
+          )
+          ;; Distribute funds
+          (try! (stx-transfer? fee contract-owner contract-owner))
+          (try! (stx-transfer? (- bid-amount fee) contract-owner brand))
+          ;; Mark as sold
+          (map-set Products product-id (merge product { available: false }))
+          ;; Close auction
+          (ok (map-set Auctions product-id (merge auction { is-active: false })))
+        )
+      )
+      err-no-active-auction
+    )
+  )
+)
+
+;; REPUTATION SYSTEM
+
+;; Submit product review and rating
+(define-public (add-review
+    (product-id uint)
+    (rating uint)
+    (comment (string-ascii 200))
+  )
+  (let ((product (unwrap! (map-get? Products product-id) err-listing-not-found)))
+    (asserts! (<= rating u5) err-invalid-rating)
+    (asserts! (> rating u0) err-invalid-rating)
+    (asserts! (is-valid-string comment) err-empty-string)
+    (asserts! (> product-id u0) err-invalid-input)
+    (ok (map-set Reviews {
+      product-id: product-id,
+      reviewer: tx-sender,
+    } {
+      rating: rating,
+      comment: comment,
+      timestamp: stacks-block-height,
+    }))
+  )
+)
+
+;; READ-ONLY QUERIES
+
+(define-read-only (get-product (product-id uint))
+  (ok (map-get? Products product-id))
+)
+
+(define-read-only (get-brand (brand principal))
+  (ok (map-get? Brands brand))
+)
+
+(define-read-only (get-review
+    (product-id uint)
+    (reviewer principal)
+  )
+  (ok (map-get? Reviews {
+    product-id: product-id,
+    reviewer: reviewer,
+  }))
+)
+
+(define-read-only (get-auction (product-id uint))
+  (ok (map-get? Auctions product-id))
+)
