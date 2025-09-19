@@ -167,3 +167,79 @@
     )
   )
 )
+
+;; AUCTION MARKETPLACE
+
+;; Launch time-bound auction
+(define-public (create-auction
+    (name (string-ascii 100))
+    (description (string-ascii 500))
+    (min-price uint)
+    (duration uint)
+  )
+  (let (
+      (brand (unwrap! (map-get? Brands tx-sender) err-not-brand-owner))
+      (product-id (+ (var-get product-counter) u1))
+      (end-block (+ stacks-block-height duration))
+    )
+    (asserts! (is-valid-string name) err-empty-string)
+    (asserts! (is-valid-string description) err-empty-string)
+    (asserts! (>= duration u10) err-invalid-duration)
+    (asserts! (> min-price u0) err-invalid-price)
+
+    (begin
+      (var-set product-counter product-id)
+      (map-set Products product-id {
+        brand: tx-sender,
+        name: name,
+        description: description,
+        price: min-price,
+        available: true,
+        created-at: stacks-block-height,
+        is-auction: true,
+      })
+      (ok (map-set Auctions product-id {
+        end-block: end-block,
+        min-price: min-price,
+        highest-bid: u0,
+        highest-bidder: none,
+        is-active: true,
+      }))
+    )
+  )
+)
+
+;; Submit competitive bid
+(define-public (place-bid
+    (product-id uint)
+    (bid-amount uint)
+  )
+  (let (
+      (product (unwrap! (map-get? Products product-id) err-listing-not-found))
+      (auction (unwrap! (map-get? Auctions product-id) err-no-active-auction))
+    )
+    (asserts! (get is-active auction) err-auction-ended)
+    (asserts! (<= stacks-block-height (get end-block auction)) err-auction-ended)
+    (asserts! (>= bid-amount (get min-price auction)) err-bid-too-low)
+    (asserts! (> bid-amount (get highest-bid auction)) err-bid-too-low)
+
+    (if (>= (stx-get-balance tx-sender) bid-amount)
+      (begin
+        ;; Refund previous highest bidder
+        (match (get highest-bidder auction)
+          prev-bidder (try! (stx-transfer? (get highest-bid auction) contract-owner prev-bidder))
+          true
+        )
+        ;; Lock new bid in escrow
+        (try! (stx-transfer? bid-amount tx-sender contract-owner))
+        (ok (map-set Auctions product-id
+          (merge auction {
+            highest-bid: bid-amount,
+            highest-bidder: (some tx-sender),
+          })
+        ))
+      )
+      err-insufficient-funds
+    )
+  )
+)
